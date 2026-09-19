@@ -391,76 +391,91 @@ def click_didnt_receive_code_and_check_timer():
         tap(pos[0], pos[1])
         time.sleep(2)
     else:
-        log("Tombol 'Didn't receive code?' tidak ditemukan di layar.", "WARN")
-        return "FAILED", "Tombol Didn't receive code tidak ditemukan"
+        log("Tombol 'Didn't receive code?' tidak ditemukan di layar. Analisis layar langsung...", "WARN")
 
-    # 2. Analisis popup 'Choose how to verify' / 'Receive new SMS'
+    # 2. Ambil snapshot UI terbaru setelah klik (termasuk bottom sheet 'Choose how to verify')
     xml_sheet = dump_ui()
-    xml_lower = xml_sheet.lower()
+    xml_sheet_lower = xml_sheet.lower()
 
-    # Cari teks timer di bawah "Receive new SMS" / "Try again in..."
-    timer_text = ""
-    try:
-        root = ET.fromstring(xml_sheet)
-        for node in root.iter("node"):
-            t = node.get("text", "")
-            d = node.get("content-desc", "")
-            full = f"{t} {d}".lower()
-            if "try again in" in full or "coba lagi dalam" in full or "hours" in full or "hours" in t.lower():
-                timer_text = f"{t} {d}".strip()
-                break
-    except Exception:
-        pass
+    # 3. Analisis Timer dari Teks XML secara langsung (Sangat Akurat)
+    # Cek Jam (hour / hrs / jam) -> Pasti > 10 menit (cth: 7 hours, 19 hours)
+    match_hour = re.search(r'(\d+)\s*(hour|hrs|hr|jam)', xml_sheet_lower)
+    if match_hour:
+        hrs = int(match_hour.group(1))
+        log(f"--> Timer terdeteksi: {hrs} jam (di atas 10 menit). Lanjut ke nomor berikutnya!", "WARN")
+        return "NEXT", f"Timer {hrs} jam (> 10 menit)"
 
-    log(f"Timer terdeteksi di 'Receive new SMS': '{timer_text}'", "INFO")
-
-    # 3. Analisis durasi timer:
-    # Kasus A: "hours" atau "jam" (misal: "Try again in 19 hours" -> pasti di atas 10 menit!)
-    if "hour" in timer_text.lower() or "jam" in timer_text.lower():
-        log(f"--> Timer di atas 10 menit ({timer_text}). Lanjut ke nomor berikutnya!", "WARN")
-        return "NEXT", f"Timer > 10 menit ({timer_text})"
-
-    # Kasus B: "minutes" atau "menit"
-    match_min = re.search(r"(\d+)\s*(min|minute|menit)", timer_text.lower())
+    # Cek Menit (minute / min / menit)
+    match_min = re.search(r'(\d+)\s*(minute|minutes|min|menit)', xml_sheet_lower)
     if match_min:
-        minutes = int(match_min.group(1))
-        if minutes < 10:
-            log(f"--> Timer di bawah 10 menit ({minutes} menit). STOP SEMUA PROSES!", "SUCCESS")
-            return "STOP", f"Timer < 10 menit ({minutes} menit)"
+        mins = int(match_min.group(1))
+        if mins < 10:
+            log(f"--> Timer terdeteksi: {mins} menit (di bawah 10 menit). STOP SEMUA PROSES!", "SUCCESS")
+            return "STOP", f"Timer {mins} menit (< 10 menit)"
         else:
-            log(f"--> Timer di atas 10 menit ({minutes} menit). Lanjut ke nomor berikutnya!", "WARN")
-            return "NEXT", f"Timer >= 10 menit ({minutes} menit)"
+            log(f"--> Timer terdeteksi: {mins} menit (di atas 10 menit). Lanjut ke nomor berikutnya!", "WARN")
+            return "NEXT", f"Timer {mins} menit (>= 10 menit)"
 
-    # Jika teks SMS biasa tidak ada timer atau langsung tersedia
-    if "receive new sms" in xml_lower or "terima sms baru" in xml_lower:
+    # Cek Detik (second / sec / detik) -> < 10 menit
+    match_sec = re.search(r'(\d+)\s*(second|seconds|sec|detik)', xml_sheet_lower)
+    if match_sec:
+        secs = int(match_sec.group(1))
+        log(f"--> Timer terdeteksi: {secs} detik (di bawah 10 menit). STOP SEMUA PROSES!", "SUCCESS")
+        return "STOP", f"Timer {secs} detik (< 10 menit)"
+
+    # Jika ada indikasi "try again" atau "coba lagi" tapi angka tidak terurai -> Anggap > 10 menit (Skip)
+    if "try again" in xml_sheet_lower or "coba lagi" in xml_sheet_lower:
+        log("--> Terdeteksi pesan 'try again/coba lagi'. Anggap timer > 10 menit. Lanjut!", "WARN")
+        return "NEXT", "Timer terdeteksi (try again/coba lagi) > 10 menit"
+
+    # Jika tidak ada timer sama sekali dan tombol SMS siap/tersedia
+    if "receive new sms" in xml_sheet_lower or "resend sms" in xml_sheet_lower or "terima sms" in xml_sheet_lower:
         log("--> SMS dapat dikirim sekarang (tanpa timer / < 10 menit). STOP SEMUA PROSES!", "SUCCESS")
         return "STOP", "SMS dapat dikirim sekarang"
 
-    # Default fallback jika tidak dapat membaca timer persis
-    return "STOP", f"Default fallback timer ({timer_text})"
+    return "NEXT", "Timer tidak terdeteksi (Default skip)"
 
 def click_wrong_number():
     """Mengklik 'Wrong number?' di layar verifikasi untuk kembali ke form input nomor."""
     log("Mengklik 'Wrong number?' untuk lanjut ke nomor berikutnya...", "INFO")
     
-    # Tutup popup bottom sheet jika terbuka dengan klik area atas atau tombol Back
-    press_key(4) # Back key untuk menutup bottom sheet
+    # 1. Tutup bottom sheet jika terbuka dengan menekan area atas layar
+    tap(540, 150)
+    time.sleep(0.5)
+    press_key(4) # Back key jika masih terbuka
     time.sleep(1)
 
-    xml = dump_ui()
-    pos, _ = find_element(xml, text_pattern="wrong number")
-    if not pos:
-        pos, _ = find_element(xml, text_pattern="salah nomor")
-    if not pos:
-        pos, _ = find_element(xml, text_pattern="wrong")
+    # 2. Cari & klik "Wrong number?" di layar verifikasi
+    for attempt in range(3):
+        xml = dump_ui()
+        pos, _ = find_element(xml, text_pattern="wrong number")
+        if not pos:
+            pos, _ = find_element(xml, text_pattern="salah nomor")
+        if not pos:
+            pos, _ = find_element(xml, text_pattern="wrong")
 
-    if pos:
-        tap(pos[0], pos[1])
-        time.sleep(2)
-    else:
-        # Fallback klik koordinat biru "Wrong number?" di layar verifikasi
-        tap(540, 390)
-        time.sleep(2)
+        if pos:
+            log(f"Mengklik 'Wrong number?' di koordinat {pos}...", "INFO")
+            tap(pos[0], pos[1])
+            time.sleep(2)
+            # Cek apakah sudah kembali ke halaman input
+            xml_check = dump_ui()
+            if "phone" in xml_check.lower() or "nomor" in xml_check.lower() or "registration_phone" in xml_check:
+                return True
+        else:
+            # Fallback beberapa titik koordinat biru "Wrong number?" yang umum di HP Android
+            log(f"Mencoba tap koordinat fallback 'Wrong number?' (Attempt {attempt+1})...", "INFO")
+            tap(540, 280)
+            time.sleep(1)
+            tap(540, 350)
+            time.sleep(1.5)
+            xml_check = dump_ui()
+            if "phone" in xml_check.lower() or "nomor" in xml_check.lower():
+                return True
+
+    log("Gagal mengklik 'Wrong number?'. Melakukan reset WhatsApp agar kembali ke form input...", "WARN")
+    reset_whatsapp()
+    return True
 
 def main():
     print("\n" + "=" * 60)
