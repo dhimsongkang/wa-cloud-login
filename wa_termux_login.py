@@ -329,17 +329,31 @@ def detect_response(timeout=15):
 
 def click_didnt_receive_code_and_check_timer():
     """
-    Mengklik 'Didn't receive code?' lalu mengecek durasi timer di 'Receive new SMS' / 'Try again in X'.
+    Mengklik 'OK' jika ada popup warning, lalu mengklik 'Didn't receive code?'
+    dan mengecek durasi timer di 'Receive new SMS' / 'Try again in X'.
     
     Returns:
         ("STOP", "Try again in < 10 mins (XX mins)")
         ("NEXT", "Try again in > 10 mins (XX hours/mins)")
         ("FAILED", "Could not detect timer")
     """
-    log("Mengklik 'Didn't receive code?'...", "INFO")
     xml = dump_ui()
+    xml_lower = xml.lower()
+    
+    # 0. Cek jika ada popup "You tried requesting code to other phone too many times... OK"
+    if "too many times" in xml_lower or "requesting code" in xml_lower or "to verify, tap" in xml_lower or "terlalu banyak" in xml_lower:
+        log("Terdeteksi popup warning 'Requesting code too many times'. Mengklik OK...", "INFO")
+        ok_pos, _ = find_element(xml, text_pattern="ok")
+        if not ok_pos:
+            ok_pos, _ = find_element(xml, res_id="button1")
+        if ok_pos:
+            tap(ok_pos[0], ok_pos[1])
+            time.sleep(1.5)
+            xml = dump_ui()
+            xml_lower = xml.lower()
     
     # 1. Klik "Didn't receive code?"
+    log("Mengklik 'Didn't receive code?'...", "INFO")
     pos, _ = find_element(xml, text_pattern="didn't receive code")
     if not pos:
         pos, _ = find_element(xml, text_pattern="didn’t receive code")
