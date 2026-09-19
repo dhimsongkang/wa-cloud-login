@@ -48,6 +48,8 @@ class WhatsAppBot:
         self.total_skipped = 0
         self.total_otp = 0
         self.total_failed = 0
+        self.cached_edit_pos = (1059, 375)
+        self.cached_input_pos = (920, 535)
 
     def log(self, message, level="INFO"):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -161,18 +163,13 @@ class WhatsAppBot:
             return "", [], rect, img
 
     def click_window_coords(self, rel_x, rel_y, rect):
-        """Klik koordinat relatif terhadap window WhatsApp."""
+        """Klik koordinat relatif terhadap window WhatsApp secara instan."""
         click_x = int(rect.left + rel_x)
         click_y = int(rect.top + rel_y)
         user32.SetForegroundWindow(self.hwnd)
-        time.sleep(0.1)
         user32.SetCursorPos(click_x, click_y)
-        time.sleep(0.1)
         MOUSEEVENTF_LEFTDOWN = 0x0002
         MOUSEEVENTF_LEFTUP = 0x0004
-        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        time.sleep(0.1)
         user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
         user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
@@ -252,58 +249,35 @@ class WhatsAppBot:
         return False
 
     def input_number_and_submit(self, nomor):
-        """Memasukkan nomor telepon dan klik Next."""
-        text, lines, rect, _ = self.get_ocr()
+        """Memasukkan nomor telepon dan klik Next secepat mungkin."""
+        rect = ctypes.wintypes.RECT()
+        user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
 
-        # Lokasi box input phone number (di kanan kode negara atau koordinat default)
-        input_pos = (920, 535)
-        for line in lines:
-            for w in line['words']:
-                if '+' in w['text']:
-                    bx = w['bounding_rect']['x']
-                    by = w['bounding_rect']['y']
-                    input_pos = (bx + 80, by + 10)
-                    break
+        # Gunakan posisi input box
+        input_pos = self.cached_input_pos if self.cached_input_pos else (920, 535)
 
         self.log(f"Menginput nomor: {nomor}", "INFO")
         self.click_window_coords(input_pos[0], input_pos[1], rect)
-        time.sleep(0.2)
 
         # Bersihkan input lama
         pyautogui.hotkey('ctrl', 'a')
-        time.sleep(0.1)
         pyautogui.press('backspace')
-        time.sleep(0.1)
 
         # Paste nomor lengkap
         formatted_no = nomor if nomor.startswith('+') else f"+{nomor}"
         pyperclip.copy(formatted_no)
         pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.4)
 
-        # Klik tombol Next atau tekan Enter
-        next_coords = self.find_text_coords(lines, ["Next"])
-        if next_coords:
-            self.click_window_coords(next_coords[0], next_coords[1], rect)
-        else:
-            pyautogui.press('enter')
+        # Tekan Enter
+        pyautogui.press('enter')
 
-        time.sleep(1)
-
-    def wait_and_detect_response(self, nomor, timeout_seconds=15):
+    def wait_and_detect_response(self, nomor, timeout_seconds=8):
         """
-        Mendeteksi respon dari WhatsApp Desktop setelah memasukkan nomor.
-        Returns:
-            "PAIRING_CODE" -> jika meminta code di HP
-            "OTP_SMS"      -> jika meminta kode OTP SMS
-            "INVALID"      -> jika nomor salah/invalid/error
-            "UNKNOWN"      -> tidak dapat ditentukan
+        Mendeteksi respon dari WhatsApp Desktop secepat mungkin (polling 0.15s).
         """
         start_time = time.time()
-        self.log("Menunggu respon dari WhatsApp Desktop...", "INFO")
-
         while time.time() - start_time < timeout_seconds:
-            time.sleep(1.5)
+            time.sleep(0.15)
             text, lines, rect, _ = self.get_ocr()
             text_lower = text.lower()
 
@@ -317,7 +291,6 @@ class WhatsAppBot:
                 return "PAIRING_CODE"
 
             # 2. Deteksi OTP SMS
-            # WhatsApp menampilkan teks seperti: "Enter verification code", "We sent an SMS", "Enter the 6-digit code", "Check your phone for SMS"
             if (
                 "verification code" in text_lower
                 or "sent an sms" in text_lower
@@ -339,42 +312,14 @@ class WhatsAppBot:
         return "UNKNOWN"
 
     def back_to_number_input(self):
-        """Kembali ke halaman input nomor setelah muncul Pairing Code (Enter code on phone)."""
-        self.log("Mengklik Back / (edit) untuk kembali ke input nomor...", "INFO")
-        for attempt in range(3):
-            text, lines, rect, _ = self.get_ocr()
-            text_lower = text.lower()
+        """Kembali ke halaman input nomor secepat mungkin setelah muncul Pairing Code."""
+        rect = ctypes.wintypes.RECT()
+        user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
 
-            # Jika sudah kembali ke halaman input nomor
-            if "enter phone number" in text_lower or "select a country" in text_lower:
-                self.log("Berhasil kembali ke halaman input nomor.", "INFO")
-                return True
-
-            # 1. Coba klik link "(edit)" jika terdeteksi
-            edit_coords = self.find_text_coords(lines, ["(edit)", "edit"])
-            if edit_coords:
-                self.log(f"Menemukan tombol (edit) di koordinat {edit_coords}, mengklik...", "INFO")
-                self.click_window_coords(edit_coords[0], edit_coords[1], rect)
-                time.sleep(2)
-                continue
-
-            # 2. Coba cari judul "Enter code on phone" dan klik tombol panah Back di sebelah kirinya
-            title_coords = self.find_text_coords(lines, ["Enter code on phone", "code on phone"])
-            if title_coords:
-                # Tombol panah ← berada di sebelah kiri judul
-                back_x = title_coords[0] - 165
-                back_y = title_coords[1]
-                self.log(f"Menemukan judul, mengklik panah Back ← di ({back_x}, {back_y})...", "INFO")
-                self.click_window_coords(back_x, back_y, rect)
-                time.sleep(2)
-                continue
-
-            # 3. Fallback: klik koordinat panah Back standar di kiri atas kartu WhatsApp
-            self.log("Mencoba klik tombol panah Back kiri atas...", "INFO")
-            self.click_window_coords(758, 380, rect)
-            time.sleep(1.5)
-
-        return False
+        # Langsung klik koordinat (edit) presisi (1059, 375) tanpa OCR ulang
+        self.click_window_coords(self.cached_edit_pos[0], self.cached_edit_pos[1], rect)
+        time.sleep(0.2)
+        return True
 
     def run(self):
         print("\n" + "=" * 65)
@@ -446,7 +391,6 @@ class WhatsAppBot:
                 # Kembali ke halaman input untuk nomor selanjutnya
                 self.back_to_number_input()
                 idx += 1
-                time.sleep(2)
 
             elif response == "OTP_SMS":
                 # KONDISI 2: BERHENTI SEMUA PROSES, TUNGGU USER MANUAL

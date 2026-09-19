@@ -1,0 +1,10 @@
+2026-09-20 00:32:05 | +258833553805 | SKIPPED | Meminta code lewat handphone (Pairing Code)
+2026-09-20 00:32:21 | +258834906160 | FAILED | Gagal navigasi ke halaman input
+2026-09-20 00:32:33 | +258834804456 | FAILED | Gagal navigasi ke halaman input
+2026-09-20 00:34:13 | +258833553805 | SKIPPED | Meminta code lewat handphone (Pairing Code)
+2026-09-20 00:34:34 | +258834906160 | FAILED | Gagal navigasi ke halaman input
+2026-09-20 00:34:46 | +258834804456 | FAILED | Gagal navigasi ke halaman input
+2026-09-20 00:37:56 | +258833553805 | FAILED | Gagal navigasi ke halaman input
+2026-09-20 00:38:25 | +258833553805 | SKIPPED | Meminta code lewat handphone (Pairing Code)
+2026-09-20 00:38:34 | +258834906160 | SKIPPED | Meminta code lewat handphone (Pairing Code)
+2026-09-20 00:38:43 | +258834804456 | SKIPPED | Meminta code lewat handphone (Pairing Code)
