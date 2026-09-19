@@ -27,12 +27,15 @@ WA_STANDARD_PACKAGE = "com.whatsapp"
 
 WA_PACKAGE = WA_BUSINESS_PACKAGE
 WA_MAIN_ACTIVITY = f"{WA_PACKAGE}/.Main"
-DUMP_XML_PATH = "/sdcard/wa_dump.xml"
+DUMP_XML_PATH = "/data/local/tmp/wa_dump.xml"
 
 def run_root(cmd):
     """Menjalankan perintah shell dengan hak akses root (su)."""
-    # Gunakan list args agar tidak ada masalah quoting shell
     result = subprocess.run(["su", "-c", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0 and result.stderr.strip():
+        err = result.stderr.strip()
+        if "idle" not in err.lower():
+            log(f"Shell Error [{cmd}]: {err}", "WARN")
     return result.stdout.strip()
 
 def log(msg, level="INFO"):
@@ -65,21 +68,14 @@ def check_root():
         return False
 
 def dump_ui():
-    """Mengambil snapshot tampilan XML layar saat ini."""
+    """Mengambil snapshot tampilan XML layar saat ini dari /data/local/tmp/."""
+    run_root(f"rm -f {DUMP_XML_PATH}")
     run_root(f"uiautomator dump {DUMP_XML_PATH} && chmod 777 {DUMP_XML_PATH}")
-    time.sleep(0.5)
-    
-    xml_content = ""
-    # Coba baca dari /sdcard/wa_dump.xml
-    if os.path.exists(DUMP_XML_PATH):
-        try:
-            with open(DUMP_XML_PATH, "r", encoding="utf-8", errors="ignore") as f:
-                xml_content = f.read()
-        except Exception:
-            xml_content = run_root(f"cat {DUMP_XML_PATH}")
-    else:
+    time.sleep(0.3)
+    xml_content = run_root(f"cat {DUMP_XML_PATH}")
+    if not xml_content or "<hierarchy" not in xml_content:
+        time.sleep(0.5)
         xml_content = run_root(f"cat {DUMP_XML_PATH}")
-        
     return xml_content
 
 def parse_bounds(bounds_str):
@@ -90,6 +86,28 @@ def parse_bounds(bounds_str):
         x2, y2 = int(match[1][0]), int(match[1][1])
         return (x1 + x2) // 2, (y1 + y2) // 2
     return None
+
+def find_all_edittexts(xml_str):
+    """Mencari semua elemen input EditText di layar (Urut dari kiri ke kanan)."""
+    edits = []
+    if not xml_str:
+        return edits
+    try:
+        root = ET.fromstring(xml_str)
+        for node in root.iter("node"):
+            cls = node.get("class", "")
+            if "edittext" in cls.lower():
+                bounds = parse_bounds(node.get("bounds", ""))
+                if bounds:
+                    edits.append({
+                        "pos": bounds,
+                        "text": node.get("text", ""),
+                        "id": node.get("resource-id", "")
+                    })
+    except Exception:
+        pass
+    edits.sort(key=lambda item: item["pos"][0])
+    return edits
 
 def find_element(xml_str, text_pattern=None, res_id=None):
     """Mencari elemen di XML berdasarkan teks atau resource-id."""
@@ -127,14 +145,10 @@ def type_text(text):
     time.sleep(0.5)
 
 def type_digits(digits):
-    """Mengetik digit satu per satu menggunakan key events - SANGAT RELIABLE.
-    KEYCODE_0=7, KEYCODE_1=8, ..., KEYCODE_9=16, KEYCODE_PLUS=81
-    """
-    for d in str(digits):
-        if d.isdigit():
-            keycode = 7 + int(d)  # KEYCODE_0=7, KEYCODE_1=8, ..., KEYCODE_9=16
-            run_root(f"input keyevent {keycode}")
-            time.sleep(0.05)  # Delay kecil antar digit
+    """Mengetik digit angka langsung via input text atau keyevent."""
+    clean = "".join(c for c in str(digits) if c.isdigit())
+    if clean:
+        run_root(f"input text {clean}")
     time.sleep(0.3)
 
 def press_key(key_code):
@@ -174,8 +188,16 @@ def navigate_to_phone_input():
     """Menavigasikan dari halaman awal ke halaman input nomor WhatsApp Business."""
     for attempt in range(8):
         xml = dump_ui()
+        if not xml:
+            time.sleep(1)
+            continue
         
-        # Cek apakah sudah di form input nomor
+        # Cek apakah sudah di form input nomor (ada elemen input EditText atau registration_phone)
+        edits = find_all_edittexts(xml)
+        if len(edits) >= 1:
+            log("Sudah berada di halaman input nomor.", "INFO")
+            return True
+
         pos, _ = find_element(xml, res_id="registration_phone")
         if pos:
             return True
@@ -252,73 +274,79 @@ def extract_country_code_and_number(nomor):
     return "62", clean_no
 
 def input_number_and_submit(nomor):
-    """Memasukkan kode negara dan nomor telepon ke WhatsApp menggunakan key events (100% reliable)."""
+    """Memasukkan kode negara dan nomor telepon ke WhatsApp menggunakan deteksi dinamis."""
     cc, phone = extract_country_code_and_number(nomor)
     log(f"Input nomor: {nomor} -> Kode Negara: +{cc}, Nomor: {phone}", "INFO")
 
     xml = dump_ui()
+    if not xml or "<hierarchy" not in xml:
+        log("Gagal dump UI XML saat input nomor.", "WARN")
+
+    # Cari semua input box (EditText) di layar
+    edits = find_all_edittexts(xml)
+    cc_pos = None
+    phone_pos = None
+
+    if len(edits) >= 2:
+        cc_pos = edits[0]["pos"]
+        phone_pos = edits[1]["pos"]
+        log(f"Terdeteksi field CC di {cc_pos}, field Phone di {phone_pos}", "INFO")
+    elif len(edits) == 1:
+        phone_pos = edits[0]["pos"]
+        log(f"Terdeteksi 1 field input di {phone_pos}", "INFO")
+    else:
+        # Fallback via resource ID
+        cc_pos, _ = find_element(xml, res_id="registration_cc")
+        if not cc_pos:
+            cc_pos, _ = find_element(xml, res_id="cc")
+        phone_pos, _ = find_element(xml, res_id="registration_phone")
+        if not phone_pos:
+            phone_pos, _ = find_element(xml, res_id="phone_number")
 
     # 1. Isi field Kode Negara (cc)
-    cc_pos, _ = find_element(xml, res_id="registration_cc")
-    if not cc_pos:
-        cc_pos, _ = find_element(xml, res_id="cc")
-
     if cc_pos:
-        log(f"Mengisi field Kode Negara (+{cc})...", "INFO")
+        log(f"Mengisi field Kode Negara (+{cc}) di {cc_pos}...", "INFO")
         tap(cc_pos[0], cc_pos[1])
         time.sleep(0.3)
-        # Hapus kode negara lama (misal '62' bawaan WhatsApp)
+        # Hapus isi lama
         for _ in range(6):
             press_key(67)  # KEYCODE_DEL
         time.sleep(0.2)
-        # Ketik kode negara pakai key events
         type_digits(cc)
         time.sleep(0.3)
-        log(f"Kode negara +{cc} berhasil diketik.", "SUCCESS")
-    else:
-        log("Field CC tidak ditemukan via XML, mencoba tap area kiri kode negara...", "WARN")
-        tap(280, 250)
-        time.sleep(0.3)
-        for _ in range(6):
-            press_key(67)
-        type_digits(cc)
-        time.sleep(0.3)
+        log(f"Kode negara +{cc} terkirim.", "SUCCESS")
 
     # 2. Isi field Phone Number
-    for ph_attempt in range(3):
+    if not phone_pos:
+        # Coba dump sekali lagi jika keyboard baru muncul dan menggeser layout
         xml = dump_ui()
-        phone_pos, phone_text = find_element(xml, res_id="registration_phone")
-        if not phone_pos:
-            phone_pos, phone_text = find_element(xml, res_id="phone_number")
-        if not phone_pos:
-            phone_pos, phone_text = find_element(xml, text_pattern="phone number")
-
-        if phone_pos:
-            tap(phone_pos[0], phone_pos[1])
-            time.sleep(0.3)
-            # Hapus teks nomor sebelumnya jika ada
-            for _ in range(25):
-                press_key(67)  # KEYCODE_DEL
-            time.sleep(0.2)
-            # Ketik digit nomor telepon menggunakan key events
-            log(f"Mengetik nomor telepon: {phone} ...", "INFO")
-            type_digits(phone)
-            time.sleep(0.5)
-            log(f"Nomor {phone} berhasil diketik ke field phone.", "SUCCESS")
-            break
+        edits = find_all_edittexts(xml)
+        if len(edits) >= 2:
+            phone_pos = edits[1]["pos"]
+        elif len(edits) == 1:
+            phone_pos = edits[0]["pos"]
         else:
-            log(f"Field phone tidak ditemukan (Attempt {ph_attempt+1}/3)...", "WARN")
-            time.sleep(1)
-    else:
-        log("Gagal menemukan field phone via XML, mencoba koordinat fallback...", "WARN")
-        tap(540, 250)
+            phone_pos, _ = find_element(xml, res_id="registration_phone")
+
+    if phone_pos:
+        log(f"Mengisi Nomor Telepon ({phone}) di {phone_pos}...", "INFO")
+        tap(phone_pos[0], phone_pos[1])
         time.sleep(0.3)
+        # Hapus nomor lama
+        for _ in range(25):
+            press_key(67)  # KEYCODE_DEL
+        time.sleep(0.2)
+        type_digits(phone)
+        time.sleep(0.5)
+        log(f"Nomor {phone} terkirim ke field phone.", "SUCCESS")
+    else:
+        log("Field phone tidak ditemukan di layar. Mencoba input nomor secara langsung...", "WARN")
         for _ in range(25):
             press_key(67)
         type_digits(phone)
-        time.sleep(0.5)
 
     # 3. Klik tombol Next / Lanjut
+    time.sleep(0.5)
     xml = dump_ui()
     next_pos, _ = find_element(xml, res_id="registration_submit")
     if not next_pos:
@@ -327,7 +355,7 @@ def input_number_and_submit(nomor):
         next_pos, _ = find_element(xml, text_pattern="lanjut")
 
     if next_pos:
-        log(f"Mengklik tombol Next...", "INFO")
+        log(f"Mengklik tombol Next di {next_pos}...", "INFO")
         tap(next_pos[0], next_pos[1])
     else:
         log("Tombol Next tidak ditemukan via ID, menekan Enter...", "WARN")
