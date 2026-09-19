@@ -215,47 +215,72 @@ def navigate_to_phone_input():
         
     return False
 
+def extract_country_code_and_number(nomor):
+    """Mengekstrak kode negara dan nomor telepon secara dinamis untuk semua negara (+224, +258, +62, dll)."""
+    clean_no = nomor.replace("+", "").replace(" ", "").replace("-", "").strip()
+    if not clean_no:
+        return "62", ""
+
+    # Kode negara 1 digit: US/Canada (+1), Russia/Kazakhstan (+7)
+    if clean_no.startswith("1") or clean_no.startswith("7"):
+        return clean_no[:1], clean_no[1:]
+
+    # Daftar umum kode negara 2 digit
+    two_digit_ccs = {
+        "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "42", "43", "44", "45", "46", "47", "48", "49",
+        "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62", "63", "64", "65", "66", "81", "82", "84", "86",
+        "90", "91", "92", "93", "94", "95", "98"
+    }
+    if len(clean_no) >= 2 and clean_no[:2] in two_digit_ccs:
+        return clean_no[:2], clean_no[2:]
+
+    # Kode negara 3 digit (cth: 224 Guinea, 258 Mozambik, 234 Nigeria, dll)
+    if len(clean_no) > 3:
+        return clean_no[:3], clean_no[3:]
+
+    return "62", clean_no
+
 def input_number_and_submit(nomor):
-    """Memasukkan nomor telepon ke form pendaftaran WhatsApp."""
-    # Bersihkan nomor dari format +
-    clean_no = nomor.replace("+", "").strip()
-    
-    # Ambil kode negara (misal 258 untuk Mozambik, 62 untuk Indo)
-    country_code = "62"
-    phone_no = clean_no
-    if clean_no.startswith("258"):
-        country_code = "258"
-        phone_no = clean_no[3:]
-    elif clean_no.startswith("62"):
-        country_code = "62"
-        phone_no = clean_no[2:]
+    """Memasukkan nomor telepon ke form pendaftaran WhatsApp dengan kode negara dinamis."""
+    country_code, phone_no = extract_country_code_and_number(nomor)
+    log(f"Ekstraksi nomor {nomor} -> Kode Negara: +{country_code}, Nomor: {phone_no}", "INFO")
 
     xml = dump_ui()
 
     # 1. Input kode negara jika ada input field kode negara
     cc_pos, _ = find_element(xml, res_id="registration_cc")
+    if not cc_pos:
+        cc_pos, _ = find_element(xml, res_id="cc")
     if cc_pos:
         tap(cc_pos[0], cc_pos[1])
-        # Hapus kode lama
-        for _ in range(4):
+        time.sleep(0.3)
+        # Hapus kode negara lama (misal 62)
+        for _ in range(5):
             press_key(67) # KEYCODE_DEL
+        time.sleep(0.2)
         type_text(country_code)
+        time.sleep(0.5)
 
     # 2. Input nomor telepon
+    xml = dump_ui() # Re-dump UI untuk memperbarui koordinat phone_pos jika ada perubahan layout
     phone_pos, _ = find_element(xml, res_id="registration_phone")
     if not phone_pos:
-        # Fallback cari berdasarkan teks phone number
+        phone_pos, _ = find_element(xml, res_id="phone_number")
+    if not phone_pos:
         phone_pos, _ = find_element(xml, text_pattern="phone number")
     
     if phone_pos:
         tap(phone_pos[0], phone_pos[1])
+        time.sleep(0.3)
         # Hapus teks nomor sebelumnya
-        for _ in range(15):
+        for _ in range(18):
             press_key(67) # KEYCODE_DEL
+        time.sleep(0.2)
         type_text(phone_no)
         time.sleep(0.5)
 
     # 3. Klik tombol Next / Lanjut
+    xml = dump_ui()
     next_pos, _ = find_element(xml, res_id="registration_submit")
     if not next_pos:
         next_pos, _ = find_element(xml, text_pattern="next")
@@ -263,7 +288,7 @@ def input_number_and_submit(nomor):
         next_pos, _ = find_element(xml, text_pattern="lanjut")
 
     if next_pos:
-        log(f"Menginput nomor {nomor} dan mengklik Next...", "INFO")
+        log(f"Mengklik Next untuk nomor +{country_code} {phone_no}...", "INFO")
         tap(next_pos[0], next_pos[1])
     else:
         press_key(66) # Enter
