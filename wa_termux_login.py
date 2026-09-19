@@ -241,43 +241,51 @@ def extract_country_code_and_number(nomor):
     return "62", clean_no
 
 def input_number_and_submit(nomor):
-    """Memasukkan nomor telepon ke form pendaftaran WhatsApp dengan kode negara dinamis."""
-    country_code, phone_no = extract_country_code_and_number(nomor)
-    log(f"Ekstraksi nomor {nomor} -> Kode Negara: +{country_code}, Nomor: {phone_no}", "INFO")
+    """Memasukkan nomor telepon langsung dari nomor.txt tanpa ekstraksi kode negara."""
+    # Bersihkan nomor: hapus +, spasi, strip
+    clean_no = nomor.replace("+", "").replace(" ", "").replace("-", "").strip()
+    log(f"Input nomor langsung: {nomor} -> {clean_no}", "INFO")
 
     xml = dump_ui()
 
-    # 1. Input kode negara jika ada input field kode negara
+    # 1. Kosongkan field kode negara (cc) agar tidak double
     cc_pos, _ = find_element(xml, res_id="registration_cc")
     if not cc_pos:
         cc_pos, _ = find_element(xml, res_id="cc")
     if cc_pos:
         tap(cc_pos[0], cc_pos[1])
         time.sleep(0.3)
-        # Hapus kode negara lama (misal 62)
-        for _ in range(5):
-            press_key(67) # KEYCODE_DEL
-        time.sleep(0.2)
-        type_text(country_code)
-        time.sleep(0.5)
-
-    # 2. Input nomor telepon
-    xml = dump_ui() # Re-dump UI untuk memperbarui koordinat phone_pos jika ada perubahan layout
-    phone_pos, _ = find_element(xml, res_id="registration_phone")
-    if not phone_pos:
-        phone_pos, _ = find_element(xml, res_id="phone_number")
-    if not phone_pos:
-        phone_pos, _ = find_element(xml, text_pattern="phone number")
-    
-    if phone_pos:
-        tap(phone_pos[0], phone_pos[1])
+        for _ in range(6):
+            press_key(67)  # KEYCODE_DEL
         time.sleep(0.3)
-        # Hapus teks nomor sebelumnya
-        for _ in range(18):
-            press_key(67) # KEYCODE_DEL
-        time.sleep(0.2)
-        type_text(phone_no)
-        time.sleep(0.5)
+
+    # 2. Langsung ketik SEMUA digit nomor ke field phone number
+    for ph_attempt in range(3):
+        xml = dump_ui()
+        phone_pos, phone_text = find_element(xml, res_id="registration_phone")
+        if not phone_pos:
+            phone_pos, phone_text = find_element(xml, res_id="phone_number")
+        if not phone_pos:
+            phone_pos, phone_text = find_element(xml, text_pattern="phone number")
+
+        if phone_pos:
+            tap(phone_pos[0], phone_pos[1])
+            time.sleep(0.3)
+            # Hapus teks sebelumnya
+            for _ in range(25):
+                press_key(67)  # KEYCODE_DEL
+            time.sleep(0.3)
+            # Ketik SELURUH nomor langsung (termasuk digit kode negara)
+            type_text(clean_no)
+            time.sleep(0.8)
+            log(f"Nomor {clean_no} sudah diketik ke field phone.", "SUCCESS")
+            break
+        else:
+            log(f"Field phone tidak ditemukan (Attempt {ph_attempt+1}/3)...", "WARN")
+            time.sleep(1)
+    else:
+        log("Gagal menemukan field phone. Skip nomor ini.", "ERROR")
+        return False
 
     # 3. Klik tombol Next / Lanjut
     xml = dump_ui()
@@ -288,23 +296,36 @@ def input_number_and_submit(nomor):
         next_pos, _ = find_element(xml, text_pattern="lanjut")
 
     if next_pos:
-        log(f"Mengklik Next untuk nomor +{country_code} {phone_no}...", "INFO")
+        log(f"Mengklik Next untuk nomor {nomor}...", "INFO")
         tap(next_pos[0], next_pos[1])
     else:
-        press_key(66) # Enter
+        log("Tombol Next tidak ditemukan, menekan Enter...", "WARN")
+        press_key(66)  # Enter
 
     time.sleep(3)
 
     # 4. Tangani dialog konfirmasi "Is this the correct number?" -> Klik YES / OK
-    xml_confirm = dump_ui()
-    yes_pos, _ = find_element(xml_confirm, text_pattern="yes")
-    if not yes_pos:
-        yes_pos, _ = find_element(xml_confirm, text_pattern="ya")
-    if not yes_pos:
-        yes_pos, _ = find_element(xml_confirm, text_pattern="ok")
-    if yes_pos:
-        tap(yes_pos[0], yes_pos[1])
-        time.sleep(2)
+    for confirm_attempt in range(3):
+        xml_confirm = dump_ui()
+        xml_confirm_lower = xml_confirm.lower()
+
+        # Cek apakah sudah pindah ke halaman verifying
+        if "verifying" in xml_confirm_lower or ("enter" in xml_confirm_lower and "code" in xml_confirm_lower):
+            break
+
+        yes_pos, _ = find_element(xml_confirm, text_pattern="yes")
+        if not yes_pos:
+            yes_pos, _ = find_element(xml_confirm, text_pattern="ya")
+        if not yes_pos:
+            yes_pos, _ = find_element(xml_confirm, text_pattern="ok")
+        if yes_pos:
+            log("Mengklik YES/OK pada dialog konfirmasi nomor...", "INFO")
+            tap(yes_pos[0], yes_pos[1])
+            time.sleep(2)
+            break
+        time.sleep(1)
+
+    return True
 
 def detect_response(timeout=15):
     """
@@ -518,7 +539,13 @@ def main():
                 continue
 
         # 2. Input nomor
-        input_number_and_submit(nomor)
+        result = input_number_and_submit(nomor)
+        if result is False:
+            log(f"Gagal memasukkan nomor {nomor}. Reset & lanjut ke nomor berikutnya...", "ERROR")
+            record_result(nomor, "FAILED", "Gagal input nomor ke form")
+            reset_whatsapp()
+            idx += 1
+            continue
 
         # 3. Deteksi apakah masuk ke layar 'Verifying your number' atau 'Banned'
         resp = detect_response(timeout=12)
