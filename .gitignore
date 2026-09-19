@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.png
+*.jpg
+*.log
+wa_login.log
+wa_termux.log
+inspect_wa.py
